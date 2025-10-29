@@ -36,3 +36,26 @@ def load_model(checkpoint_path: Path, device: torch.device) -> UNet:
     model.eval()
     model.num_classes = config["num_classes"]  # type: ignore[attr-defined]
     return model
+
+@torch.no_grad()
+def compute_dice(logits: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    probs = torch.sigmoid(logits).clamp(min=eps, max=1 - eps)
+    targets = targets.float()
+    dims = (0, 2, 3)
+    intersection = torch.sum(probs * targets, dim=dims)
+    union = torch.sum(probs, dim=dims) + torch.sum(targets, dim=dims)
+    dice = (2 * intersection + eps) / (union + eps)
+    return dice
+
+
+@torch.no_grad()
+def evaluate_model(model: UNet, dataset: BrainSegmentationDataset, device: torch.device) -> torch.Tensor:
+    loader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=0)
+    dice_scores = []
+    for batch in loader:
+        images = batch["image"].to(device)
+        masks = batch["mask"].to(device)
+        logits = model(images)
+        dice = compute_dice(logits, masks)
+        dice_scores.append(dice.cpu())
+    return torch.stack(dice_scores).mean(dim=0)
