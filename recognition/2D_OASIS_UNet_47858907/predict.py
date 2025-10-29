@@ -37,6 +37,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> UNet:
     model.num_classes = config["num_classes"]  # type: ignore[attr-defined]
     return model
 
+
 @torch.no_grad()
 def compute_dice(logits: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     probs = torch.sigmoid(logits).clamp(min=eps, max=1 - eps)
@@ -99,3 +100,33 @@ def plot_example(example: dict, save_path: Path) -> None:
     plt.savefig(save_path, dpi=300)
     plt.close(fig)
     print(f"Saved prediction visualisation to {save_path.resolve()}")
+
+
+def main() -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    model = load_model(CHECKPOINT_PATH, device)
+
+    normalization = T.Normalize(mean=(0.5,), std=(0.5,))
+
+    test_dataset = BrainSegmentationDataset(
+        split="test",
+        data_root=DEFAULT_DATA_ROOT,
+        num_classes=model.num_classes,  # type: ignore[arg-type]
+        augmentations=None,
+        transform=normalization,
+        target_transform=None,
+    )
+
+    dice_scores = evaluate_model(model, test_dataset, device)
+    print("Per-class Dice scores on the test set:")
+    for idx, score in enumerate(dice_scores):
+        print(f" - Class {idx}: {score:.4f}")
+
+    example = infer_example(model, test_dataset, device, EXAMPLE_INDEX)
+    plot_example(example, PREDICTION_FIGURE)
+
+
+if __name__ == "__main__":
+    main()
