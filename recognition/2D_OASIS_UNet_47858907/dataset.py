@@ -61,6 +61,7 @@ def _default_augmentations(image: torch.Tensor, mask: torch.Tensor) -> Tuple[tor
         mask = torch.flip(mask, dims=[0])
     return image, mask
 
+
 class BrainSegmentationDataset(Dataset[Dict[str, torch.Tensor]]):
     """
     Dataset wrapper for OASIS PNG slices.
@@ -144,3 +145,67 @@ class BrainSegmentationDataset(Dataset[Dict[str, torch.Tensor]]):
             mask = torch.nn.functional.one_hot(mask.long(), num_classes=self.num_classes).permute(2, 0, 1).float()
 
         return {"image": image, "mask": mask, "id": image_path.stem}
+    
+
+def create_dataloaders(
+    *,
+    data_root: Path | str = DEFAULT_DATA_ROOT,
+    num_classes: int,
+    batch_size: int = 8,
+    num_workers: int = 4,
+    pin_memory: bool = True,
+    augment: bool = True,
+) -> Dict[str, DataLoader]:
+    """
+    Factory that returns PyTorch DataLoader objects for train/val/test splits.
+    """
+
+    normalization = T.Normalize(mean=(0.5,), std=(0.5,))
+
+    def mask_to_one_hot(mask: torch.Tensor) -> torch.Tensor:
+        if mask.ndimension() == 2:
+            mask = torch.nn.functional.one_hot(mask.long(), num_classes=num_classes).permute(2, 0, 1)
+        return mask.float()
+
+    dataset_kwargs = dict(
+        data_root=data_root,
+        num_classes=num_classes,
+        transform=normalization,
+        target_transform=mask_to_one_hot,
+    )
+
+    train_dataset = BrainSegmentationDataset(
+        split="train",
+        augmentations=_default_augmentations if augment else None,
+        **dataset_kwargs,
+    )
+    val_dataset = BrainSegmentationDataset(split="val", augmentations=None, **dataset_kwargs)
+    test_dataset = BrainSegmentationDataset(split="test", augmentations=None, **dataset_kwargs)
+
+    loaders = {
+        "train": DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+        ),
+        "val": DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+        ),
+        "test": DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+        ),
+    }
+    return loaders
+
+
+__all__ = ["BrainSegmentationDataset", "create_dataloaders", "DEFAULT_DATA_ROOT", "SPLIT_TO_FOLDERS"]
