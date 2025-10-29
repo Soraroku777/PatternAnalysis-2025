@@ -167,3 +167,120 @@ def evaluate(model: nn.Module, loader, device: torch.device) -> Tuple[float, tor
     epoch_loss = running_loss / len(loader.dataset)
     mean_dice = torch.stack(collected_dice).mean(dim=0)
     return epoch_loss, mean_dice
+
+
+def plot_curves(history: Dict[str, List[float]], save_path: Path) -> None:
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    epochs = range(1, len(history["train_loss"]) + 1)
+
+    plt.figure(figsize=(10, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, history["train_loss"], label="Train")
+    plt.plot(epochs, history["val_loss"], label="Validation")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Loss Curves")
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, history["train_dice"], label="Train")
+    plt.plot(epochs, history["val_dice"], label="Validation")
+    plt.xlabel("Epoch")
+    plt.ylabel("Mean Dice")
+    plt.title("Dice Curves")
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
+
+def save_metrics(history: Dict[str, List[float]], per_class_names: List[str], test_dice: torch.Tensor) -> None:
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {key: [float(v) for v in values] for key, values in history.items()}
+    data["test_dice"] = {name: float(score) for name, score in zip(per_class_names, test_dice)}
+    with METRICS_PATH.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def main() -> None:
+    ensure_dataset_structure(DATA_ROOT)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    loaders = create_dataloaders(
+        data_root=DATA_ROOT,
+        num_classes=MODEL_CONFIG["num_classes"],
+        batch_size=TRAINING_CONFIG["batch_size"],
+        num_workers=TRAINING_CONFIG["num_workers"],
+        pin_memory=TRAINING_CONFIG["pin_memory"] and device.type == "cuda",
+        augment=True,
+    )
+
+    model = UNet(**MODEL_CONFIG).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=TRAINING_CONFIG["learning_rate"], weight_decay=TRAINING_CONFIG["weight_decay"])
+    use_mixed_precision = TRAINING_CONFIG["mixed_precision"] and device.type == "cuda"
+    scaler = amp.GradScaler(device="cuda", enabled=use_mixed_precision) if use_mixed_precision else None
+
+    history: Dict[str, List[float]] = {"train_loss": [], "val_loss": [], "train_dice": [], "val_dice": []}
+
+    for epoch in range(1, TRAINING_CONFIG["epochs"] + 1):
+        train_loss, train_dice = train_one_epoch(
+            model,
+            loaders["train"],
+            optimizer,
+            scaler,
+            device,
+            use_mixed_precision,
+        )
+        val_loss, val_dice = evaluate(model, loaders["val"], device)
+
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["train_dice"].append(float(train_dice.mean()))
+        history["val_dice"].append(float(val_dice.mean()))
+
+        dice_details = ", ".join(f"{score:.3f}" for score in val_dice)
+        print(
+            f"Epoch {epoch:03d}/{TRAINING_CONFIG['epochs']} | "
+            f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | "
+            f"Val Dice Mean: {val_dice.mean():.4f} | per-class: [{dice_details}]"
+        )
+
+    print("Training complete. Evaluating on test set...")
+    test_loss, test_dice = evaluate(model, loaders["test"], device)
+    print(f"Test Loss: {test_loss:.4f}")
+    for idx, score in enumerate(test_dice):
+        print(f" - Class {idx}: Dice = {score:.4f}")
+
+    min_dice = float(test_dice.min())
+    if min_dice < TRAINING_CONFIG["dice_threshold"]:
+        raise RuntimeError(
+            f"Dice similarity requirement not met. Minimum per-class Dice {min_dice:.3f} "
+            f"< {TRAINING_CONFIG['dice_threshold']:.2f}. Consider further training or tuning."
+        )
+
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state": model.state_dict(),
+            "model_config": MODEL_CONFIG,
+            "training_config": TRAINING_CONFIG,
+            "test_dice": test_dice.tolist(),
+        },
+        CHECKPOINT_PATH,
+    )
+    print(f"Model checkpoint saved to {CHECKPOINT_PATH.resolve()}")
+
+    plot_curves(history, CURVES_PATH)
+    print(f"Training curves saved to {CURVES_PATH.resolve()}")
+
+    class_names = [f"class_{i}" for i in range(MODEL_CONFIG["num_classes"])]
+    save_metrics(history, class_names, test_dice)
+    print(f"Metrics saved to {METRICS_PATH.resolve()}")
+
+
+if __name__ == "__main__":
+    main()
