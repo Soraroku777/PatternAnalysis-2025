@@ -59,3 +59,43 @@ def evaluate_model(model: UNet, dataset: BrainSegmentationDataset, device: torch
         dice = compute_dice(logits, masks)
         dice_scores.append(dice.cpu())
     return torch.stack(dice_scores).mean(dim=0)
+
+
+@torch.no_grad()
+def infer_example(model: UNet, dataset: BrainSegmentationDataset, device: torch.device, index: int) -> dict:
+    sample = dataset[index]
+    image = sample["image"].unsqueeze(0).to(device)
+    logits = model(image)
+    probs = torch.sigmoid(logits)[0].cpu()
+    predicted = torch.argmax(probs, dim=0)
+
+    mask_tensor = sample["mask"]
+    if mask_tensor.ndimension() == 3:
+        ground_truth = torch.argmax(mask_tensor, dim=0)
+    else:
+        ground_truth = mask_tensor
+
+    return {
+        "id": sample["id"],
+        "image": sample["image"][0].cpu(),
+        "prediction": predicted,
+        "ground_truth": ground_truth,
+    }
+
+
+def plot_example(example: dict, save_path: Path) -> None:
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    axes[0].imshow(example["image"], cmap="gray")
+    axes[0].set_title("Input Slice")
+    axes[1].imshow(example["ground_truth"], cmap="tab20")
+    axes[1].set_title("Ground Truth")
+    axes[2].imshow(example["prediction"], cmap="tab20")
+    axes[2].set_title("Prediction")
+    for ax in axes:
+        ax.axis("off")
+    fig.suptitle(f"Example ID: {example['id']}")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close(fig)
+    print(f"Saved prediction visualisation to {save_path.resolve()}")
