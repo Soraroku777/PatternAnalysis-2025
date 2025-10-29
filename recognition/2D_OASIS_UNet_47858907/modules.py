@@ -108,3 +108,46 @@ class AttentionGate(nn.Module):
         psi = self.sigmoid(self.psi(f))
         psi = F.interpolate(psi, size=skip.shape[-2:], mode="bilinear", align_corners=True)
         return skip * psi
+
+
+class UpBlock(nn.Module):
+    """Up-sampling block with attention-gated skip fusion."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        skip_channels: int,
+        out_channels: int,
+        *,
+        use_bilinear: bool = False,
+        dropout: float = 0.0,
+        use_se: bool = True,
+    ) -> None:
+        super().__init__()
+        if use_bilinear:
+            self.up = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True),
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            )
+        else:
+            self.up = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2)
+        self.attention = AttentionGate(skip_channels=skip_channels, gating_channels=out_channels)
+        self.conv = ConvBlock(out_channels + skip_channels, out_channels, dropout=dropout, use_se=use_se)
+
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        x = self.up(x)
+        if x.shape[-2:] != skip.shape[-2:]:
+            x = F.pad(
+                x,
+                [
+                    0,
+                    skip.shape[-1] - x.shape[-1],
+                    0,
+                    skip.shape[-2] - x.shape[-2],
+                ],
+            )
+        skip = self.attention(skip, x)
+        x = torch.cat([skip, x], dim=1)
+        x = self.conv(x)
+        return x
+
