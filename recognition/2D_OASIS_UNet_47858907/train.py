@@ -106,3 +106,64 @@ def segmentation_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tens
     bce = nn.functional.binary_cross_entropy_with_logits(logits, targets.float())
     dsc = dice_loss(logits, targets)
     return bce + dsc
+
+
+def train_one_epoch(
+    model: nn.Module,
+    loader,
+    optimizer: optim.Optimizer,
+    scaler: amp.GradScaler | None,
+    device: torch.device,
+    use_mixed_precision: bool,
+) -> Tuple[float, torch.Tensor]:
+    model.train()
+    running_loss = 0.0
+    collected_dice: List[torch.Tensor] = []
+
+    for batch in loader:
+        images = batch["image"].to(device)
+        masks = batch["mask"].to(device)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        with amp.autocast(device_type=device.type, enabled=use_mixed_precision):
+            logits = model(images)
+            loss = segmentation_loss(logits, masks)
+
+        if scaler is not None and use_mixed_precision:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        running_loss += loss.item() * images.size(0)
+        with torch.no_grad():
+            per_class, _ = dice_coefficient(logits.detach(), masks)
+            collected_dice.append(per_class.cpu())
+
+    epoch_loss = running_loss / len(loader.dataset)
+    mean_dice = torch.stack(collected_dice).mean(dim=0)
+    return epoch_loss, mean_dice
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module, loader, device: torch.device) -> Tuple[float, torch.Tensor]:
+    model.eval()
+    running_loss = 0.0
+    collected_dice: List[torch.Tensor] = []
+
+    for batch in loader:
+        images = batch["image"].to(device)
+        masks = batch["mask"].to(device)
+        logits = model(images)
+        loss = segmentation_loss(logits, masks)
+        running_loss += loss.item() * images.size(0)
+
+        per_class, _ = dice_coefficient(logits, masks)
+        collected_dice.append(per_class.cpu())
+
+    epoch_loss = running_loss / len(loader.dataset)
+    mean_dice = torch.stack(collected_dice).mean(dim=0)
+    return epoch_loss, mean_dice
