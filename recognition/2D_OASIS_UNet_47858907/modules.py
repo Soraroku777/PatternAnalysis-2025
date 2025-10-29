@@ -71,3 +71,40 @@ class SqueezeExcite(nn.Module):
         scale = self.fc2(scale)
         scale = self.sigmoid(scale)
         return x * scale
+
+
+class DownBlock(nn.Module):
+    """Down-sampling block that halves spatial dimensions."""
+
+    def __init__(self, in_channels: int, out_channels: int, *, dropout: float = 0.0, use_se: bool = True) -> None:
+        super().__init__()
+        self.pool = nn.MaxPool2d(2)
+        self.conv = ConvBlock(in_channels, out_channels, dropout=dropout, use_se=use_se)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool(x)
+        x = self.conv(x)
+        return x
+
+
+class AttentionGate(nn.Module):
+    """Attention gate for skip connections, guiding the decoder to relevant regions."""
+
+    def __init__(self, skip_channels: int, gating_channels: int) -> None:
+        super().__init__()
+        inter_channels = max(skip_channels // 2, 1)
+        self.theta = nn.Conv2d(skip_channels, inter_channels, kernel_size=2, stride=2, bias=False)
+        self.phi = nn.Conv2d(gating_channels, inter_channels, kernel_size=1, bias=True)
+        self.psi = nn.Conv2d(inter_channels, 1, kernel_size=1)
+        self.bn = nn.BatchNorm2d(inter_channels)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, skip: torch.Tensor, gating: torch.Tensor) -> torch.Tensor:
+        theta_x = self.theta(skip)
+        phi_g = self.phi(gating)
+        if theta_x.shape[-2:] != phi_g.shape[-2:]:
+            phi_g = F.interpolate(phi_g, size=theta_x.shape[-2:], mode="bilinear", align_corners=True)
+        f = F.relu(self.bn(theta_x + phi_g), inplace=True)
+        psi = self.sigmoid(self.psi(f))
+        psi = F.interpolate(psi, size=skip.shape[-2:], mode="bilinear", align_corners=True)
+        return skip * psi
