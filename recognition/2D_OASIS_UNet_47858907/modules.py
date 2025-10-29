@@ -175,3 +175,93 @@ class Bottleneck(nn.Module):
         x = x + residual
         x = self.act(x)
         return x
+
+
+class UNet(nn.Module):
+    """
+    Improved UNet architecture integrating residual blocks, squeeze-excitation, and attention gates.
+    Designed for 2D medical image segmentation tasks like OASIS brain tissue labelling.
+    """
+
+    def __init__(
+        self,
+        *,
+        in_channels: int,
+        num_classes: int,
+        base_channels: int = 32,
+        depth: int = 4,
+        dropout: float = 0.1,
+        use_bilinear: bool = False,
+    ) -> None:
+        super().__init__()
+        if depth < 2:
+            raise ValueError("UNet depth must be at least 2.")
+
+        self.depth = depth
+        self.stem = ConvBlock(in_channels, base_channels, dropout=dropout, use_se=True)
+
+        encoder_blocks: list[nn.Module] = []
+        channel_progression = [base_channels]
+        current_channels = base_channels
+        for _ in range(depth - 1):
+            next_channels = current_channels * 2
+            encoder_blocks.append(DownBlock(current_channels, next_channels, dropout=dropout, use_se=True))
+            channel_progression.append(next_channels)
+            current_channels = next_channels
+        self.encoder = nn.ModuleList(encoder_blocks)
+
+        self.bottleneck = Bottleneck(current_channels, dilation=2, dropout=dropout)
+
+        decoder_blocks: list[nn.Module] = []
+        skip_channels_list = list(reversed(channel_progression[:-1]))
+        for skip_channels in skip_channels_list:
+            decoder_blocks.append(
+                UpBlock(
+                    in_channels=current_channels,
+                    skip_channels=skip_channels,
+                    out_channels=skip_channels,
+                    use_bilinear=use_bilinear,
+                    dropout=dropout,
+                    use_se=True,
+                )
+            )
+            current_channels = skip_channels
+        self.decoder = nn.ModuleList(decoder_blocks)
+
+        self.output_conv = nn.Conv2d(current_channels, num_classes, kernel_size=1)
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="leaky_relu")
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        skips: list[torch.Tensor] = []
+        x = self.stem(x)
+        skips.append(x)
+        for block in self.encoder:
+            x = block(x)
+            skips.append(x)
+        x = self.bottleneck(x)
+        for block, skip in zip(self.decoder, reversed(skips[:-1])):
+            x = block(x, skip)
+        logits = self.output_conv(x)
+        return logits
+
+
+__all__ = [
+    "UNet",
+    "ConvBlock",
+    "DownBlock",
+    "UpBlock",
+    "Bottleneck",
+    "SqueezeExcite",
+    "AttentionGate",
+]
