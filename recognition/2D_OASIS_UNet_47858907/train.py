@@ -72,3 +72,37 @@ def ensure_dataset_structure(data_root: Path) -> None:
             "Missing paths:\n"
             f"{formatted}"
         )
+
+
+def dice_coefficient(logits: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute per-class and mean Dice scores.
+    Both logits and targets are expected to have shape (N, C, H, W).
+    """
+    probs = torch.sigmoid(logits)
+    probs = probs.clamp(min=eps, max=1 - eps)
+    targets = targets.float()
+
+    dims = (0, 2, 3)
+    intersection = torch.sum(probs * targets, dim=dims)
+    union = torch.sum(probs, dim=dims) + torch.sum(targets, dim=dims)
+    dice = (2 * intersection + eps) / (union + eps)
+    mean_dice = dice.mean()
+    return dice, mean_dice
+
+
+def dice_loss(logits: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    if targets.ndimension() == 3:
+        targets = torch.nn.functional.one_hot(targets.long(), num_classes=logits.shape[1]).permute(0, 3, 1, 2).float()
+    probs = torch.sigmoid(logits)
+    dims = (0, 2, 3)
+    intersection = torch.sum(probs * targets, dim=dims)
+    cardinality = torch.sum(probs, dim=dims) + torch.sum(targets, dim=dims)
+    dice = (2 * intersection + eps) / (cardinality + eps)
+    return 1 - dice.mean()
+
+
+def segmentation_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    bce = nn.functional.binary_cross_entropy_with_logits(logits, targets.float())
+    dsc = dice_loss(logits, targets)
+    return bce + dsc
