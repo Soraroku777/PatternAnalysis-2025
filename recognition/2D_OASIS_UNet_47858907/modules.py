@@ -151,3 +151,27 @@ class UpBlock(nn.Module):
         x = self.conv(x)
         return x
 
+
+class Bottleneck(nn.Module):
+    """Bottleneck block with dilated convolutions for larger receptive fields."""
+
+    def __init__(self, channels: int, dilation: int = 2, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=dilation, dilation=dilation, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.act = nn.LeakyReLU(inplace=True)
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.act(x)
+        x = self.dropout(x)
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = x + residual
+        x = self.act(x)
+        return x
