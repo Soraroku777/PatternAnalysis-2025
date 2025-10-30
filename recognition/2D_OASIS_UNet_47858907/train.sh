@@ -1,5 +1,4 @@
 #!/bin/bash
-# SLURM job for training the 2D OASIS U-Net on the Rangpur A100 partition.
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
