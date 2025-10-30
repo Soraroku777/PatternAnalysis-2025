@@ -1,4 +1,5 @@
 #!/bin/bash
+# SLURM job for running inference and metrics on Rangpur using the trained checkpoint.
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
